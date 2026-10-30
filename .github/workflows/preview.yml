@@ -1,0 +1,59 @@
+# Plan morning-digest § 3/§ 4. Builds the digest page in CI and deploys it straight to
+# GitHub Pages: no preview file is ever committed (AGENTS.md, ADR 0003).
+# with_marker=true  → banner carries the lane marker (repo secret LANE_MARKER), for review.
+# with_marker=false → LANE_MARKER unset, banner reads "no marker set" (clean-up).
+name: preview
+on:
+  workflow_dispatch:
+    inputs:
+      with_marker:
+        description: Carry the lane marker (false for the clean-up)
+        type: boolean
+        default: true
+      night:
+        description: Night to preview
+        default: '2026-10-28'
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Serve rig and save the page
+        env:
+          LANE_MARKER: ${{ inputs.with_marker && secrets.LANE_MARKER || '' }}
+          NIGHT: ${{ inputs.night }}
+        run: |
+          pnpm start > rig.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://localhost:8787/health >/dev/null && break; sleep 1; done
+          mkdir -p _site
+          curl -fsS "http://localhost:8787/digest/$NIGHT" -o _site/index.html
+          if [ -z "$LANE_MARKER" ]; then grep -q 'no marker set' _site/index.html; fi
+          grep -q '<table' _site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+          retention-days: 1
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
